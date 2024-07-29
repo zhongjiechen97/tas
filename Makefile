@@ -23,7 +23,7 @@ INCDIR ?= $(PREFIX)/include
 # DPDK configuration
 
 # Prefix for dpdk
-RTE_SDK ?= /usr/
+RTE_SDK ?= ~/dpdk-stable-21.11.7
 
 DPDK_CPPFLAGS += -I$(RTE_SDK)/include -I$(RTE_SDK)/include/dpdk \
   -I$(RTE_SDK)/include/x86_64-linux-gnu/dpdk/
