@@ -10,6 +10,8 @@ TESTS_LIBTAS := \
   tests/lowlevel \
   tests/lowlevel_echo \
   tests/bench_ll_echo \
+  tests/ll_tpt_client \
+  tests/ll_lat_client \
 
 # simple test programs linking against libtas_sockets
 TESTS_SOCKETS := \

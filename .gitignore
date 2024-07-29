@@ -6,6 +6,10 @@
 *.json
 tas/tas
 tests/bench_ll_echo
+tests/ll_tpt_client
+tests/ll_lat_client
+tests/usocket_epoll_eof
+tests/usocket_shutdown
 tests/lowlevel
 tests/lowlevel_echo
 tests/usocket_accept

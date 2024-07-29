@@ -42,12 +42,16 @@
 #   define STATS_TS(n) do { } while (0)
 #endif
 
-// #define ECHO
-
 static uint32_t max_flows = 4096;
-static uint32_t max_bytes = 1024;
+static uint32_t max_bytes = 100;
 static uint16_t max_events = 64;
-static uint16_t listen_port;
+
+uint64_t recv_ts[10000000];
+uint32_t recv_i = 0;
+uint64_t send_ts[10000000];
+uint32_t send_i = 0;
+uint64_t rtt_ts[10000000];
+uint32_t rtt_i = 0;
 
 struct connection {
     struct flextcp_connection conn;
@@ -58,11 +62,10 @@ struct connection {
 
 struct core {
     struct flextcp_context context;
-    struct flextcp_listener listen;
     struct connection *conns;
     int cn;
 #ifdef PRINT_STATS
-    uint64_t rx_events;
+    uint64_t tx_events;
     uint64_t rx_bytes;
     uint64_t tx_acalls;
     uint64_t tx_scalls;
@@ -89,74 +92,44 @@ static inline uint64_t read_cnt(uint64_t *p)
 }
 #endif
 
-static void prepare_core(struct core *c)
+static int init_connect(struct flextcp_context *ctx, uint32_t ip,
+    uint16_t port, struct flextcp_connection *conn)
 {
-    int i, cn = c->cn;
-    struct connection *co;
+  struct flextcp_event ev;
+  int ret;
 
-#ifdef PRINT_STATS
-    if ((c->poll_hist = calloc(max_events + 1, sizeof(*c->poll_hist)))
-        == NULL)
-    {
-      fprintf(stderr, "[%d] calloc for poll_hist failed\n", cn);
-      abort();
-    }
-#endif
+  if (flextcp_connection_open(ctx, conn, ip, port) != 0) {
+    fprintf(stderr, "flextcp_connection_open failed\n");
+    return -1;
+  }
 
-    /* prepare listener */
-    if (flextcp_listen_open(&c->context, &c->listen, listen_port, max_flows,
-                FLEXTCP_LISTEN_REUSEPORT) != 0)
-    {
-        fprintf(stderr, "[%d] flextcp_listen_open failed\n", cn);
-        abort();
+  /* wait for connection to open */
+  while (1) {
+    if ((ret = flextcp_context_poll(ctx, 1, &ev)) < 0) {
+      fprintf(stderr, "init_connect: flextcp_context_poll failed\n");
+      return -1;
     }
 
-
-    c->conns = NULL;
-    for (i = 0; i < max_flows; i++) {
-        /* allocate connection structs */
-        if ((co = calloc(1, sizeof(*co))) == NULL) {
-            fprintf(stderr, "[%d] alloc of connection structs failed\n", cn);
-            abort();
-        }
-
-        co->next = c->conns;
-        c->conns = co;
-    }
-}
-
-static inline void accept_connection(struct core *co)
-{
-    struct connection *c;
-
-    c = co->conns;
-    if (c == NULL) {
-        fprintf(stderr, "[%d] no connection struct available for new conn\n",
-                co->cn);
-        return;
+    /* skip if no event */
+    if (ret == 0) {
+      continue;
     }
 
-    if (flextcp_listen_accept(&co->context, &co->listen, &c->conn) != 0) {
-        fprintf(stderr, "[%d] flextcp_listen_accept failed\n", co->cn);
-        return;
-    }
-    co->conns = c->next;
-}
-
-static inline void accepted_connection(struct core *co,
-        struct flextcp_event *ev)
-{
-    struct connection *c = (struct connection *) ev->ev.listen_accept.conn;
-
-    if (ev->ev.listen_accept.status != 0) {
-        fprintf(stderr, "[%d] flextcp_listen_accept async failure\n", co->cn);
-        c->next = co->conns;
-        co->conns = c;
-        return;
+    if (ev.event_type != FLEXTCP_EV_CONN_OPEN) {
+      fprintf(stderr, "init_connect: unexpected event type (%u)\n",
+          ev.event_type);
+      continue;
     }
 
-    c->to_send = 0;
-    c->to_alloc = 0;
+    if (ev.ev.conn_open.status != 0) {
+      fprintf(stderr, "init_connect: listen open request failed\n");
+      return -1;
+    }
+
+    break;
+  }
+
+  return 0;
 }
 
 static inline int conn_send(struct core *co, struct connection *c)
@@ -176,9 +149,6 @@ static inline int conn_send(struct core *co, struct connection *c)
     c->to_alloc -= allocd;
     c->to_send  += allocd;
 
-    if (allocd > 0) {
-        flextcp_connection_rx_done(&co->context, &c->conn, allocd);
-    }
     if (c->to_alloc > 0) {
         STATS_ADD(co, tx_afail, 1);
     }
@@ -195,6 +165,49 @@ static inline int conn_send(struct core *co, struct connection *c)
     }
 
     return 0;
+}
+
+static void prepare_core(struct core *c)
+{
+    int i, cn = c->cn;
+    struct connection *co;
+
+#ifdef PRINT_STATS
+    if ((c->poll_hist = calloc(max_events + 1, sizeof(*c->poll_hist)))
+        == NULL)
+    {
+      fprintf(stderr, "[%d] calloc for poll_hist failed\n", cn);
+      abort();
+    }
+#endif
+
+    c->conns = NULL;
+    for (i = 0; i < max_flows; i++) {
+        /* allocate connection structs */
+        if ((co = calloc(1, sizeof(*co))) == NULL) {
+            fprintf(stderr, "[%d] alloc of connection structs failed\n", cn);
+            abort();
+        }
+
+        co->next = c->conns;
+        c->conns = co;
+
+        if (init_connect(&c->context, 0xc0a80602, 5000, &co->conn)) {
+            fprintf(stderr, "[%d] init_connect failed\n", cn);
+            abort();
+        }
+
+        co->to_alloc += max_bytes;
+        if (conn_send(c, co)) {
+            fprintf(stderr, "[%d] conn_send failed\n", cn);
+        }
+        send_ts[send_i++] = get_nanos();
+    }
+}
+
+static int cmpfunc(const void *a, const void *b)
+{
+    return (*(uint64_t *) a - *(uint64_t *) b);
 }
 
 static void *thread_run(void *arg)
@@ -224,6 +237,11 @@ static void *thread_run(void *arg)
         STATS_ADD(co, poll_hist[n], 1);
 #endif
 
+        if (co->conns->to_alloc) {
+            if (conn_send(co, co->conns))
+                fprintf(stderr, "[%d] conn_send failed\n", cn);
+        }
+
         for (i = 0; i < n; i++) {
             ev = evs + i;
 
@@ -232,29 +250,18 @@ static void *thread_run(void *arg)
                     /* listener is ready now, nothing to do */
                     break;
 
-                case FLEXTCP_EV_LISTEN_NEWCONN:
-                    /* new connection arrived, need to accept */
-                    accept_connection(co);
-                    printf("new connection arrived, need to accept\n");
-                    break;
-
-                case FLEXTCP_EV_LISTEN_ACCEPT:
-                    /* accept succeeded */
-                    accepted_connection(co, ev);
-                    printf("accept succeeded\n");
-                    break;
-
                 case FLEXTCP_EV_CONN_RECEIVED:
                     /* received data on connection */
                     c = (struct connection *) ev->ev.conn_received.conn;
-                    #ifdef ECHO
                     c->to_alloc += ev->ev.conn_received.len;
-                    conn_send(co, c);
-                    STATS_ADD(co, rx_events, 1);
-                    STATS_ADD(co, rx_bytes, ev->ev.conn_received.len);
-                    #else
-                    flextcp_connection_rx_done(&co->context, &c->conn, ev->ev.conn_received.len);
-                    #endif
+                    if (c->to_alloc < max_bytes) break;
+                    recv_ts[recv_i++] = get_nanos();
+
+                    if (recv_i == 655) goto out;
+
+                    send_ts[send_i++] = get_nanos();
+                    if (conn_send(co, c))
+                        fprintf(stderr, "[%d] conn_send failed\n", cn);
                     // printf("receive %lu bytes\n", ev->ev.conn_received.len);
                     break;
 
@@ -262,6 +269,7 @@ static void *thread_run(void *arg)
                     /* send buffer on connection opened up from 0 */
                     c = (struct connection *) ev->ev.conn_sendbuf.conn;
                     conn_send(co, c);
+                    STATS_ADD(co, tx_events, 1);
                     break;
 
                 default:
@@ -270,6 +278,21 @@ static void *thread_run(void *arg)
             }
         }
     }
+
+out:
+    // compute rtt
+    for (i = 0; i < recv_i; i++) {
+        if (i < 50) continue;
+        rtt_ts[rtt_i++] = recv_ts[i] - send_ts[i];
+    }
+    // sort rtt
+    qsort(rtt_ts, rtt_i, sizeof(uint64_t), cmpfunc);
+
+    // print min, p50, p99, p99.9 latency
+    printf("min latency: %.2f us\n", rtt_ts[0] / 1000.0);
+    printf("p50 latency: %.2f us\n", rtt_ts[rtt_i / 2] / 1000.0);
+    printf("p99 latency: %.2f us\n", rtt_ts[rtt_i * 99 / 100] / 1000.0);
+    printf("p99.9 latency: %.2f us\n", rtt_ts[rtt_i * 999 / 1000] / 1000.0);
 
     return NULL;
 }
@@ -284,19 +307,18 @@ int main(int argc, char *argv[])
     uint64_t x;
 #endif
 
-    if (argc < 3 || argc > 5) {
-        fprintf(stderr, "Usage: ./bench_ll_echo PORT THREADS [MAX-FLOWS] "
+    if (argc < 3 || argc > 4) {
+        fprintf(stderr, "Usage: ./ll_tpt_client THREADS [MAX-FLOWS] "
             "[MAX-BYTES]\n");
         return EXIT_FAILURE;
     }
 
-    listen_port = atoi(argv[1]);
-    num_threads = atoi(argv[2]);
+    num_threads = atoi(argv[1]);
     if (argc >= 3) {
-        max_flows = atoi(argv[3]);
+        max_flows = atoi(argv[2]);
     }
     if (argc >= 4) {
-        max_bytes = atoi(argv[4]);
+        max_bytes = atoi(argv[3]);
     }
 
     if (flextcp_init() != 0) {
@@ -328,7 +350,7 @@ int main(int argc, char *argv[])
         sleep(1);
 #ifdef PRINT_STATS
         for (i = 0; i < num_threads; i++) {
-            uint64_t rx_events = read_cnt(&cs[i].rx_events);
+            uint64_t tx_events = read_cnt(&cs[i].tx_events);
             uint64_t rx_bytes = read_cnt(&cs[i].rx_bytes);
             uint64_t tx_acalls = read_cnt(&cs[i].tx_acalls);
             uint64_t tx_scalls = read_cnt(&cs[i].tx_scalls);
@@ -338,8 +360,9 @@ int main(int argc, char *argv[])
 
             printf("    core %2d: (re=%"PRIu64", rb=%"PRIu64 ", tac=%"PRIu64
                     ", tsc=%"PRIu64", taf=%"PRIu64", tsf=%"PRIu64", tb=%"PRIu64
-                    ")", i, rx_events, rx_bytes, tx_acalls, tx_scalls, tx_afail,
+                    ")", i, tx_events, rx_bytes, tx_acalls, tx_scalls, tx_afail,
                     tx_sfail, tx_bytes);
+            printf("Throughput: %.2f Gbps, finish(%u)\n", tx_bytes * 8.0 / 1000000000, recv_i);
             for (j = 0; j < max_events + 1; j++) {
               if ((x = read_cnt(&cs[i].poll_hist[j])) != 0) {
                 printf(" poll[%u]=%"PRIu64, j, x);
