@@ -36,7 +36,7 @@
 
 struct network_buf_handle;
 
-extern uint8_t net_port_id;
+extern uint16_t net_port_id;
 extern uint16_t rss_reta_size;
 
 int network_thread_init(struct dataplane_context *ctx);

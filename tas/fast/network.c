@@ -47,7 +47,7 @@
 #define RX_DESCRIPTORS 256
 #define TX_DESCRIPTORS 128
 
-uint8_t net_port_id = 0;
+uint16_t net_port_id = UINT16_MAX;
 static struct rte_eth_conf port_conf = {
     .rxmode = {
       .mq_mode = ETH_MQ_RX_RSS,
@@ -93,6 +93,7 @@ int network_init(unsigned n_threads)
 {
   uint8_t count;
   int ret;
+  struct rte_eth_dev_info dev_info;
   uint16_t p;
 
   num_threads = n_threads;
@@ -112,14 +113,18 @@ int network_init(unsigned n_threads)
   if (count == 0) {
     fprintf(stderr, "No ethernet devices\n");
     goto error_exit;
-  } else if (count > 1) {
-    fprintf(stderr, "Multiple ethernet devices\n");
-    goto error_exit;
   }
-
-  RTE_ETH_FOREACH_DEV(p) {
-    net_port_id = p;
-  }
+    RTE_ETH_FOREACH_DEV(p) {
+        rte_eth_dev_info_get(p, &dev_info);
+        if (strcmp(dev_info.device->name, "0000:03:00.1") == 0) {
+            net_port_id = p;
+        }
+    }
+    
+    if (net_port_id == UINT16_MAX) {
+        fprintf(stderr, "No suitable ethernet device found\n");
+        goto error_exit;
+    }
 
   /* get mac address and device info */
   rte_eth_macaddr_get(net_port_id, &eth_addr);
