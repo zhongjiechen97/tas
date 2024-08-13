@@ -583,7 +583,7 @@ static int config_defaults(struct configuration *c, char *progname)
   c->cc_timely_alpha = 0.02 * UINT32_MAX;
   c->cc_timely_beta = 0.8 * UINT32_MAX;
   c->cc_timely_min_rtt = 11;
-  c->cc_timely_min_rate = 10000;
+  c->cc_timely_min_rate = 500000;
   c->fp_cores_max = 1;
   c->fp_interrupts = 1;
   c->fp_xsumoffload = 1;

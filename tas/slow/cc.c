@@ -518,6 +518,10 @@ static inline void timely_update(struct connection *c,
   if (cc->slowstart && new_rtt > (config.cc_timely_tlow + config.cc_timely_thigh) / 2) {
     cc->slowstart = 0;
   }
+  
+  /* re-enter slowstart */
+  if (c->cc_rate <= (config.cc_timely_min_rate << 2) && !cc->slowstart && (new_rtt <= (config.cc_timely_tlow + config.cc_timely_thigh) / 2))
+    cc->slowstart = 1;
 
   /* clamp rate to actually used rate * 1.2 */
   if (!cc->slowstart && c->cc_rate > (uint64_t) act_rate * 12 / 10) {
