@@ -201,6 +201,8 @@ int nicif_connection_add(uint32_t db, uint64_t mac_remote, uint32_t ip_local,
   assert(i < FLEXNIC_PL_FLOWHT_ENTRIES);
   assert(d < FLEXNIC_PL_FLOWHT_NBSZ);
 
+    rx_base = 0;
+
   if ((flags & NICIF_CONN_ECN) == NICIF_CONN_ECN) {
     rx_base |= FLEXNIC_PL_FLOWST_ECN;
   }
